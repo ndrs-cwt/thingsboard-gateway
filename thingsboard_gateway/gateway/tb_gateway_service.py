@@ -23,6 +23,7 @@ from sys import argv, executable, getsizeof
 from threading import RLock, Thread
 from time import sleep, time
 
+import psutil
 from simplejson import dumps, load, loads
 from thingsboard_gateway.gateway.constants import CONNECTED_DEVICES_FILENAME
 from yaml import safe_load
@@ -207,6 +208,8 @@ class TBGatewayService:
                     summary_messages = self.__form_statistics()
                     # with self.__lock:
                     self.tb_client.client.send_telemetry(summary_messages)
+                    resource_message = self.__get_resource()
+                    self.tb_client.client.send_telemetry(resource_message)
                     gateway_statistic_send = time() * 1000
                     # self.__check_shared_attributes()
 
@@ -722,6 +725,27 @@ class TBGatewayService:
                 str(connector_camel_case + ' EventsSent').replace(' ', '')]
             summary_messages.update(**telemetry)
         return summary_messages
+
+    def __get_resource(self) -> None:
+        resource_dict = {}
+        try:
+            resource_dict["free_ram"] = psutil.virtual_memory().available * 100 / psutil.virtual_memory().total
+        except Exception as e:
+            log.exception(e)
+
+        try:
+            resource_dict["cpu_load"] = psutil.cpu_percent(interval=0.1, percpu=True)
+        except Exception as e:
+            log.exception(e)
+
+        # Currently support only NanoPi R1
+        try:
+            temp_dict = psutil.sensors_temperatures()
+            resource_dict["cpu_temp"] = temp_dict["cpu_thermal"][0].current
+        except Exception as e:
+            pass
+
+        return resource_dict
 
     def add_device(self, device_name, content, device_type):
         if device_name not in self.__saved_devices:

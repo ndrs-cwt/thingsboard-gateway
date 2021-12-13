@@ -52,6 +52,7 @@ class ParkingLockConnector(Connector, Thread):
         self.__devices_around = {}
         self.__available_converters = []
         self.__notify_delegators = {}
+        self.__remake_list = []
         self.__fill_interest_devices()
         self.daemon = True
 
@@ -63,6 +64,13 @@ class ParkingLockConnector(Connector, Thread):
 
             if time.time() - self.__previous_read_time >= self.__check_interval_seconds:
                 self.__get_services_and_chars()
+                if len(self.__remake_list) > 0:
+                    for device in self.__remake_list:
+                        log.warning("Clear %s entry from __devices_around", device)
+                        del self.__devices_around[device]["peripheral"]
+                        del self.__devices_around[device]["services"]
+                        self.__devices_around[device]["is_new_device"] = True # Trig the connector to remake all object
+                    self.__remake_list.clear()
                 self.__previous_read_time = time.time()
 
             time.sleep(.2)
@@ -175,7 +183,7 @@ class ParkingLockConnector(Connector, Thread):
                     'scanned_device') is None:
                 self.__devices_around[interested_device]['scanned_device'] = device
                 self.__devices_around[interested_device]['is_new_device'] = True
-            # log.debug('Device with address: %s - found.', device.addr.upper())
+            log.debug('Device with address: %s - found.', device.addr.upper())
 
     # Main data process, read each device and data
     def __get_services_and_chars(self):
@@ -187,11 +195,11 @@ class ParkingLockConnector(Connector, Thread):
 
                     #Create or load Peripheral object
                     if self.__devices_around[device].get('peripheral') is None:
-                        log.info('Create new peripheral object')
+                        log.debug('Create new peripheral object')
                         address_type = self.__devices_around[device]['device_config'].get('addrType', "public")
                         self.__create_peripheral(device, address_type)
                     else:
-                        log.info('Load peripheral object')
+                        log.debug('Load peripheral object')
                         peripheral = self.__devices_around[device]['peripheral']
 
                     self.__check_and_reconnect(device)
@@ -281,6 +289,10 @@ class ParkingLockConnector(Connector, Thread):
                     peripheral.disconnect()
             except BTLEDisconnectError:
                 log.exception('Connection lost. Device %s', device)
+                continue
+            except BrokenPipeError:
+                log.exception('Broken Pipe. Device %s, wait for remake', device)
+                self.__remake_list.append(device)
                 continue
             except Exception as e:
                 log.exception(e)

@@ -6,13 +6,14 @@ from thingsboard_gateway.connectors.ble.ble_uplink_converter import BLEUplinkCon
 class ParkingLockConverter(BLEUplinkConverter):
     def __init__(self, config):
         self.__config = config
+        log.info(self.__config)
         self.dict_result = {"deviceName": config.get('name', config['MACAddress']),
                             "deviceType": config.get('deviceType', 'BLEDevice'),
                             "telemetry": [],
                             "attributes": []
                             }
 
-    def convert(self, config, data):
+    def convert(self, config, data, to_string=False):
         try:
             if config.get('clean', True):
                 self.dict_result["telemetry"] = []
@@ -25,11 +26,14 @@ class ParkingLockConverter(BLEUplinkConverter):
                         return {}
                     byte_to = byte_to if byte_to != -1 else len(data)
                     converted_data = data[byte_from: byte_to]
-                    converted_data = int.from_bytes(converted_data, "big", signed=False)
-                    # try:
-                    #     converted_data = converted_data.replace(b"\x00", b'').decode('UTF-8')
-                    # except UnicodeDecodeError:
-                    #     converted_data = str(converted_data)
+                    if to_string is True:
+                        try:
+                            converted_data = converted_data.replace(b"\x00", b'').decode('UTF-8')
+                        except UnicodeDecodeError:
+                            converted_data = str(converted_data)
+                    else:
+                        converted_data = int.from_bytes(converted_data, "big", signed=False)
+
                     if config['section_config'].get('key') is not None:
                         self.dict_result[config['type']].append({config['section_config'].get('key'): converted_data})
                     else:

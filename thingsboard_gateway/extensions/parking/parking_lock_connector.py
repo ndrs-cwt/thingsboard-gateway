@@ -23,7 +23,6 @@ from copy import deepcopy
 from bluepy import __path__ as bluepy_path
 from bluepy.btle import BTLEDisconnectError, BTLEGattError, BTLEInternalError, BTLEManagementError, DefaultDelegate, Peripheral, Scanner, UUID, capitaliseName, ScanEntry
 
-from thingsboard_gateway.connectors.ble.bytes_ble_uplink_converter import BytesBLEUplinkConverter
 from thingsboard_gateway.connectors.connector import Connector, log
 from thingsboard_gateway.tb_utility.tb_loader import TBModuleLoader
 
@@ -69,7 +68,6 @@ class ParkingLockConnector(Connector, Thread):
                         log.warning("Clear %s entry from __devices_around", device)
                         del self.__devices_around[device]["peripheral"]
                         del self.__devices_around[device]["services"]
-                        self.__devices_around[device]["is_new_device"] = True # Trig the connector to remake all object
                     self.__remake_list.clear()
                 self.__previous_read_time = time.time()
 
@@ -182,7 +180,6 @@ class ParkingLockConnector(Connector, Thread):
             if device.addr.upper() == interested_device and self.__devices_around[interested_device].get(
                     'scanned_device') is None:
                 self.__devices_around[interested_device]['scanned_device'] = device
-                self.__devices_around[interested_device]['is_new_device'] = True
             log.debug('Device with address: %s - found.', device.addr.upper())
 
     # Main data process, read each device and data
@@ -257,10 +254,6 @@ class ParkingLockConnector(Connector, Thread):
                                         'characteristic': characteristic,
                                         'handle': characteristic.handle}
 
-                    if self.__devices_around[device]['is_new_device']:
-                        log.debug('New device %s - processing.', device)
-                        self.__devices_around[device]['is_new_device'] = False
-                        self.__new_device_processing(device)
                     for interest_char in self.__devices_around[device]['interest_uuid']:
                         characteristics_configs_for_processing_by_methods = {}
 
@@ -296,45 +289,6 @@ class ParkingLockConnector(Connector, Thread):
                 continue
             except Exception as e:
                 log.exception(e)
-
-    def __new_device_processing(self, device):
-        default_services_on_device = [service for service in self.__devices_around[device]['services'].keys() if
-                                      int(service.split('-')[0], 16) in self.__default_services]
-        log.debug('Default services found on device %s :%s', device, default_services_on_device)
-        converter = BytesBLEUplinkConverter(self.__devices_around[device]['device_config'])
-        converted_data = None
-        for service in default_services_on_device:
-            characteristics = [char for char in self.__devices_around[device]['services'][service].keys() if
-                               self.__devices_around[device]['services'][service][char][
-                                   'characteristic'].supportsRead()]
-            for char in characteristics:
-                read_config = {'characteristicUUID': char,
-                               'method': 'READ',
-                               }
-                try:
-                    self.__check_and_reconnect(device)
-                    data = self.__service_processing(device, read_config)
-                    attribute = capitaliseName(UUID(char).getCommonName())
-                    read_config['key'] = attribute
-                    read_config['byteFrom'] = 0
-                    read_config['byteTo'] = -1
-                    converter_config = [{"type": "attributes",
-                                         "clean": False,
-                                         "section_config": read_config}]
-                    for interest_information in converter_config:
-                        try:
-                            converted_data = converter.convert(interest_information, data)
-                            self.statistics['MessagesReceived'] = self.statistics['MessagesReceived'] + 1
-                            log.debug(converted_data)
-                        except Exception as e:
-                            log.debug(e)
-                except Exception as e:
-                    log.debug('Cannot process %s', e)
-                    continue
-        if converted_data is not None:
-            # self.__gateway.add_device(converted_data["deviceName"], {"connector": self})
-            self.__gateway.send_to_storage(self.get_name(), deepcopy(converted_data))
-            self.statistics['MessagesSent'] = self.statistics['MessagesSent'] + 1
 
     def __create_peripheral(self, device:str, address_type:str) -> None:
         max_retry = 3
@@ -445,7 +399,6 @@ class ParkingLockConnector(Connector, Thread):
         for interest_device in self.__config.get('devices'):
             keys_in_config = ['attributes', 'telemetry']
             if interest_device.get('MACAddress') is not None:
-                default_converter = BytesBLEUplinkConverter(interest_device)
                 interest_uuid = {}
                 for key_type in keys_in_config:
                     for type_section in interest_device.get(key_type):
@@ -466,7 +419,7 @@ class ParkingLockConnector(Connector, Thread):
                                 except Exception as e:
                                     log.exception(e)
                             else:
-                                converter = default_converter
+                                raise Exception("Not found converter for {}".format(key_type))
                             if converter is not None:
                                 if interest_uuid.get(type_section["characteristicUUID"].upper()) is None:
                                     interest_uuid[type_section["characteristicUUID"].upper()] = [

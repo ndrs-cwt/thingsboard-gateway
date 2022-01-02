@@ -19,6 +19,7 @@ from random import choice
 from string import ascii_lowercase
 from threading import Thread
 from copy import deepcopy
+from typing import List
 
 from bluepy import __path__ as bluepy_path
 from bluepy.btle import BTLEDisconnectError, BTLEGattError, BTLEInternalError, BTLEManagementError, DefaultDelegate, Peripheral, Scanner, UUID, capitaliseName, ScanEntry
@@ -26,6 +27,18 @@ from bluepy.btle import BTLEDisconnectError, BTLEGattError, BTLEInternalError, B
 from thingsboard_gateway.connectors.connector import Connector, log
 from thingsboard_gateway.tb_utility.tb_loader import TBModuleLoader
 
+KIN_DEF_TELEMETRY = {"key":"status_raw", 
+                    "method":"read", 
+                    "converter":"ParkingLockConverter",
+                    "characteristicUUID":"0000FFF1-0000-1000-8000-00805F9B34FB"
+                    }
+
+KIN_DEF_RPC = {
+                "methodRPC":"control",
+                "withResponse":False,
+                "characteristicUUID":"0000FFF1-0000-1000-8000-00805F9B34FB",
+                "methodProcessing":"write"
+                }
 
 class ParkingLockConnector(Connector, Thread):
     def __init__(self, gateway, config, connector_type):
@@ -51,30 +64,29 @@ class ParkingLockConnector(Connector, Thread):
         self.__devices_around = {}
         self.__available_converters = []
         self.__notify_delegators = {}
-        self.__remake_list = []
+        self.__insert_pre_config(self.__config)
+        log.info(self.__config)
         self.__fill_interest_devices()
+        log.info(self.__devices_around)
         self.daemon = True
 
     def run(self):
-        while not self.__stopped:
-            if time.time() - self.__previous_scan_time >= self.__rescan_time != 0:
-                self.__scan_ble()
-                self.__previous_scan_time = time.time()
+        try:
+            while not self.__stopped:
+                if time.time() - self.__previous_scan_time >= self.__rescan_time != 0:
+                    self.__scan_ble()
+                    self.__previous_scan_time = time.time()
 
-            if time.time() - self.__previous_read_time >= self.__check_interval_seconds:
-                self.__get_services_and_chars()
-                if len(self.__remake_list) > 0:
-                    for device in self.__remake_list:
-                        log.warning("Clear %s entry from __devices_around", device)
-                        del self.__devices_around[device]["peripheral"]
-                        del self.__devices_around[device]["services"]
-                    self.__remake_list.clear()
-                self.__previous_read_time = time.time()
+                if time.time() - self.__previous_read_time >= self.__check_interval_seconds:
+                    self.__get_services_and_chars(self.__devices_around)
+                    self.__previous_read_time = time.time()
 
-            time.sleep(.2)
-            if self.__stopped:
-                log.debug('STOPPED')
-                break
+                time.sleep(.2)
+                if self.__stopped:
+                    log.debug('STOPPED')
+                    break
+        except Exception:
+            log.exception("Connector end with exception")
 
     def close(self):
         self.__stopped = True
@@ -182,9 +194,9 @@ class ParkingLockConnector(Connector, Thread):
                 self.__devices_around[interested_device]['scanned_device'] = device
             log.debug('Device with address: %s - found.', device.addr.upper())
 
-    # Main data process, read each device and data
-    def __get_services_and_chars(self):
-        for device in self.__devices_around:
+    # data process, read each device and data
+    def __get_services_and_chars(self, read_dev_list:List):
+        for device in read_dev_list:
             try:
                 if self.__devices_around.get(device) is not None and self.__devices_around[device].get(
                         'scanned_device') is not None:
@@ -201,58 +213,7 @@ class ParkingLockConnector(Connector, Thread):
 
                     self.__check_and_reconnect(device)
 
-                    try:
-                        services = peripheral.getServices()
-                    except BTLEDisconnectError:
-                        self.__check_and_reconnect(device)
-                        services = peripheral.getServices()
-
-                    for service in services:
-                        if self.__devices_around[device].get('services') is None:
-                            log.debug('Building device %s map, it may take a time, please wait...', device)
-                            self.__devices_around[device]['services'] = {}
-                        service_uuid = str(service.uuid).upper()
-                        if self.__devices_around[device]['services'].get(service_uuid) is None:
-                            self.__devices_around[device]['services'][service_uuid] = {}
-
-                            try:
-                                characteristics = service.getCharacteristics()
-                            except BTLEDisconnectError:
-                                self.__check_and_reconnect(device)
-                                characteristics = service.getCharacteristics()
-
-                            if self.__config.get('buildDevicesMap', False):
-                                for characteristic in characteristics:
-                                    descriptors = []
-                                    self.__check_and_reconnect(device)
-                                    try:
-                                        descriptors = characteristic.getDescriptors()
-                                    except BTLEDisconnectError:
-                                        self.__check_and_reconnect(device)
-                                        descriptors = characteristic.getDescriptors()
-                                    except BTLEGattError as e:
-                                        log.debug(e)
-                                    except Exception as e:
-                                        log.exception(e)
-                                    characteristic_uuid = str(characteristic.uuid).upper()
-                                    if self.__devices_around[device]['services'][service_uuid].get(
-                                            characteristic_uuid) is None:
-                                        self.__check_and_reconnect(device)
-                                        self.__devices_around[device]['services'][service_uuid][characteristic_uuid] = {'characteristic': characteristic,
-                                                                                                                        'handle': characteristic.handle,
-                                                                                                                        'descriptors': {}}
-                                    for descriptor in descriptors:
-                                        log.debug(descriptor.handle)
-                                        log.debug(str(descriptor.uuid))
-                                        log.debug(str(descriptor))
-                                        self.__devices_around[device]['services'][service_uuid][
-                                            characteristic_uuid]['descriptors'][descriptor.handle] = descriptor
-                            else:
-                                for characteristic in characteristics:
-                                    characteristic_uuid = str(characteristic.uuid).upper()
-                                    self.__devices_around[device]['services'][service_uuid][characteristic_uuid] = {
-                                        'characteristic': characteristic,
-                                        'handle': characteristic.handle}
+                    self.__check_service_map(device, peripheral)
 
                     for interest_char in self.__devices_around[device]['interest_uuid']:
                         characteristics_configs_for_processing_by_methods = {}
@@ -283,15 +244,66 @@ class ParkingLockConnector(Connector, Thread):
             except BTLEDisconnectError:
                 log.exception('Connection lost. Device %s', device)
                 continue
-            except BrokenPipeError:
-                log.exception('Broken Pipe. Device %s, wait for remake', device)
-                self.__remake_list.append(device)
-                continue
             except Exception as e:
                 log.exception(e)
 
+    def __check_service_map(self, device:str, dev_peripheral:Peripheral)-> None:
+        try:
+            services = dev_peripheral.getServices()
+        except BTLEDisconnectError:
+            self.__check_and_reconnect(device)
+            services = dev_peripheral.getServices()
+
+        for service in services:
+            if self.__devices_around[device].get('services') is None:
+                log.debug('Building device %s map, it may take a time, please wait...', device)
+                self.__devices_around[device]['services'] = {}
+            service_uuid = str(service.uuid).upper()
+            if self.__devices_around[device]['services'].get(service_uuid) is None:
+                self.__devices_around[device]['services'][service_uuid] = {}
+
+                try:
+                    characteristics = service.getCharacteristics()
+                except BTLEDisconnectError:
+                    self.__check_and_reconnect(device)
+                    characteristics = service.getCharacteristics()
+
+                if self.__config.get('buildDevicesMap', False):
+                    for characteristic in characteristics:
+                        descriptors = []
+                        self.__check_and_reconnect(device)
+                        try:
+                            descriptors = characteristic.getDescriptors()
+                        except BTLEDisconnectError:
+                            self.__check_and_reconnect(device)
+                            descriptors = characteristic.getDescriptors()
+                        except BTLEGattError as e:
+                            log.debug(e)
+                        except Exception as e:
+                            log.exception(e)
+                        characteristic_uuid = str(characteristic.uuid).upper()
+                        if self.__devices_around[device]['services'][service_uuid].get(
+                                characteristic_uuid) is None:
+                            self.__check_and_reconnect(device)
+                            self.__devices_around[device]['services'][service_uuid][characteristic_uuid] = {'characteristic': characteristic,
+                                                                                                            'handle': characteristic.handle,
+                                                                                                            'descriptors': {}}
+                        for descriptor in descriptors:
+                            log.debug(descriptor.handle)
+                            log.debug(str(descriptor.uuid))
+                            log.debug(str(descriptor))
+                            self.__devices_around[device]['services'][service_uuid][
+                                characteristic_uuid]['descriptors'][descriptor.handle] = descriptor
+                else:
+                    for characteristic in characteristics:
+                        characteristic_uuid = str(characteristic.uuid).upper()
+                        self.__devices_around[device]['services'][service_uuid][characteristic_uuid] = {
+                            'characteristic': characteristic,
+                            'handle': characteristic.handle}
+
+
     def __create_peripheral(self, device:str, address_type:str) -> None:
-        max_retry = 3
+        max_retry = 5 # Total sleep time exlude connection timeout = 15 sec, at max_retry = 5
         retry_cnt = 0
         while retry_cnt < max_retry:
             try:
@@ -302,12 +314,12 @@ class ParkingLockConnector(Connector, Thread):
                 log.debug("Retry creating %s Peripheral", device)
                 retry_cnt += 1
                 if retry_cnt < max_retry:
-                    time.sleep((1*retry_cnt) + retry_cnt)
+                    time.sleep(retry_cnt + 1)
                 else:
                     raise e
 
     def __check_and_reconnect(self, device:str):
-        max_retry = 3
+        max_retry = 5 # Total sleep time exlude connection timeout = 15 sec, at max_retry = 5
         retry_cnt = 0
         # pylint: disable=protected-access
         while self.__devices_around[device]['peripheral']._helper is None and retry_cnt < max_retry:
@@ -318,7 +330,7 @@ class ParkingLockConnector(Connector, Thread):
                 log.debug("Retry connecting to %s...", device)
                 retry_cnt += 1
                 if retry_cnt < max_retry:
-                    time.sleep((1*retry_cnt) + 2)
+                    time.sleep(retry_cnt + 1)
                 else:
                     raise e
 
@@ -358,9 +370,21 @@ class ParkingLockConnector(Connector, Thread):
                     self.__check_and_reconnect(device)
                     try:
                         data = characteristic.read()
+                    except BTLEDisconnectError:
+                        self.__check_and_reconnect(device)
+                        data = characteristic.read()
                     except BrokenPipeError:
                         log.error("Broken pipe happen")
-                        self.__check_and_reconnect(device)
+                        log.warning("Clear %s entry from __devices_around", device)
+                        #Clear old device map
+                        del self.__devices_around[device]["peripheral"]
+                        del self.__devices_around[device]["services"]
+                        #Create new device map
+                        address_type = self.__devices_around[device]['device_config'].get('addrType', "public")
+                        self.__create_peripheral(device, address_type)
+                        self.__check_service_map(device, self.__devices_around[device]['peripheral'])
+                        characteristic = self.__devices_around[device]['services'][service][characteristic_uuid_from_config][
+                            'characteristic']
                         data = characteristic.read()
                     log.debug(data)
                 else:
@@ -397,9 +421,9 @@ class ParkingLockConnector(Connector, Thread):
             self._connected = False
             return None
         for interest_device in self.__config.get('devices'):
-            keys_in_config = ['attributes', 'telemetry']
             if interest_device.get('MACAddress') is not None:
                 interest_uuid = {}
+                keys_in_config = ['attributes', 'telemetry']
                 for key_type in keys_in_config:
                     for type_section in interest_device.get(key_type):
                         if type_section.get("characteristicUUID") is not None:
@@ -440,6 +464,42 @@ class ParkingLockConnector(Connector, Thread):
                 self.__devices_around[interest_device['MACAddress'].upper()]['interest_uuid'] = interest_uuid
             else:
                 log.error("Device address not found, please check your settings.")
+
+    def __insert_pre_config(self, cnf_obj:dict) -> None:
+        if "devices" in cnf_obj:
+            for device in cnf_obj["devices"]:
+                model = device.get("model")
+                if model is not None:
+                    if model == "kinouwell":
+                        if "addrType" not in device:
+                            device["addrType"] = "random"
+                        if "deviceType" not in device:
+                            device["deviceType"] = "ParkingLock"
+
+                        if "telemetry" not in device:
+                            device["telemetry"] = [KIN_DEF_TELEMETRY]
+                        else:
+                            found_cfg = False
+                            for tele_cfg in device["telemetry"]:
+                                if tele_cfg == KIN_DEF_TELEMETRY:
+                                    found_cfg = True
+                                    break
+                            if found_cfg is False:
+                                device["telemetry"].append(KIN_DEF_TELEMETRY)
+
+                        if "attributes" not in device:
+                            device["attributes"] = []
+
+                        if "serverSideRpc" not in device:
+                            device["serverSideRpc"] = [KIN_DEF_RPC]
+                        else:
+                            found_cfg = False
+                            for rpc_cfg in device["serverSideRpc"]:
+                                if rpc_cfg == KIN_DEF_RPC:
+                                    found_cfg = True
+                                    break
+                            if found_cfg is False:
+                                device["telemetry"].append(KIN_DEF_RPC)
 
 
 class ScanDelegate(DefaultDelegate):

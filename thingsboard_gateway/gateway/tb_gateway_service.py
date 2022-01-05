@@ -24,7 +24,7 @@ from threading import RLock, Thread
 from time import sleep, time
 
 import psutil
-from simplejson import dumps, load, loads
+from simplejson import dumps, dump, load, loads
 from thingsboard_gateway.gateway.constants import CONNECTED_DEVICES_FILENAME
 from yaml import safe_load
 
@@ -614,6 +614,8 @@ class TBGatewayService:
                                     log.debug("Sending command RPC %s to connector %s", content["method"],
                                               connector_name)
                                     result = self.available_connectors[connector_name].server_side_rpc_handler(content)
+                        elif module == 'device':
+                            result = self.__device_cfg_rpc_proc(request_id, content)
                         elif module == 'gateway' or module in self.__remote_shell.shell_commands:
                             result = self.__rpc_gateway_processing(request_id, content)
                         else:
@@ -858,6 +860,86 @@ class TBGatewayService:
                 log.exception(e)
         log.debug("Saved connected devices.")
 
+    def __device_cfg_rpc_proc(self, request_id:str, content:dict) -> dict:
+        log.info(self.connectors_configs)
+        log.info(self.available_connectors)
+        log.info(content)
+        result_dict = {}
+        result_dict["result"] = False
+
+        method_name = content['method']
+        method_param = content.get('params', None)
+        if method_param is not None:
+            connector_type = method_param.get('type', None)
+            if connector_type is not None:
+                connector_list = self.connectors_configs.get(connector_type, None)
+                if connector_list is not None:
+                    if method_name == 'device_get':
+                        connector = connector_list[0]
+                        cfg_path = connector['config_file_path']
+                        with open(cfg_path) as cfg_file:
+                            dev_cfg = load(cfg_file)
+                            result_dict["result"] = True
+                            result_dict["devices"] = dev_cfg["devices"]
+                    elif method_name == 'device_del':
+                        dev_name = method_param.get('name', None)
+                        if dev_name is not None:
+                            connector = connector_list[0]
+                            cfg_path = connector['config_file_path']
+                            with open(cfg_path, 'r+') as cfg_file:
+                                dev_found = False
+                                dev_cfg = load(cfg_file)
+                                dev_list = dev_cfg["devices"]
+                                for dev in dev_list:
+                                    if dev_name == dev['name']:
+                                        dev_found = True
+                                        break
+                                if dev_found is True:
+                                    dev_list.remove(dev)
+                                    cfg_file.seek(0)
+                                    dump(dev_cfg, cfg_file, indent=4)
+                                    cfg_file.truncate()
+                                    result_dict["result"] = True
+                                else:
+                                    result_dict["error"] = "Not found device with name:{}".format(dev_name)
+                        else:
+                            result_dict["error"] = "Missing name"
+                    elif method_name == 'device_add':
+                        dev_name = method_param.get('name', None)
+                        dev_mac = method_param.get('MACAddress', None)
+                        dev_model = method_param.get('model', None)
+                        if dev_name is not None and dev_mac is not None and dev_model is not None:
+                            connector = connector_list[0]
+                            cfg_path = connector['config_file_path']
+                            with open(cfg_path, 'r+') as cfg_file:
+                                dev_found = False
+                                dev_cfg = load(cfg_file)
+                                dev_list = dev_cfg["devices"]
+                                for dev in dev_list:
+                                    if dev_name == dev['name']:
+                                        dev_found = True
+                                        break
+                                if dev_found is True:
+                                    result_dict["error"] = "Already have device with name:{}".format(dev_name)
+                                else:
+                                    new_dev = {"name":dev_name, "MACAddress":dev_mac, "model":dev_model}
+                                    dev_list.append(new_dev)
+                                    cfg_file.seek(0)
+                                    dump(dev_cfg, cfg_file, indent=4)
+                                    cfg_file.truncate()
+                                    result_dict["result"] = True
+                        else:
+                            result_dict["error"] = "Missing device config parameter(name, mac, model)"
+                    else:
+                        result_dict["error"] = "Unknown method:{}".format(method_name)
+                else:
+                    result_dict["error"] = "Not found connector type:{}".format(connector_type)
+            else:
+                result_dict["error"] = "Missing type"
+        else:
+            result_dict["error"] = "Missing params"
+
+        return result_dict
 
 if __name__ == '__main__':
     TBGatewayService(

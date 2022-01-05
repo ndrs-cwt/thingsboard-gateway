@@ -42,8 +42,6 @@ class TBUtility:
         error = None
         if error is None and not data.get("deviceName"):
             error = 'deviceName is empty in data: '
-        if error is None and not data.get("deviceType"):
-            error = 'deviceType is empty in data: '
 
         if error is None:
             got_attributes = False

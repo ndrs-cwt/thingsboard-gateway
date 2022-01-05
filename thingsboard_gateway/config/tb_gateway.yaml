@@ -22,8 +22,18 @@ storage:
 #  data_file_path: ./data/data.db
 #  messages_ttl_check_in_hours: 1
 #  messages_ttl_in_days: 7
+grpc:
+  enabled: false
+  serverPort: 9595
+  keepaliveTimeMs: 10000
+  keepaliveTimeoutMs: 5000
+  keepalivePermitWithoutCalls: true
+  maxPingsWithoutData: 0
+  minTimeBetweenPingsMs: 10000
+  minPingIntervalWithoutDataMs: 5000
 connectors:
-  - name: MQTT Broker Connector
+  -
+    name: MQTT Broker Connector
     type: mqtt
     configuration: mqtt.json
 
@@ -36,7 +46,6 @@ connectors:
 #    name: Modbus Connector
 #    type: modbus
 #    configuration: modbus_serial.json
-#
 #
 #  -
 #    name: OPC-UA Connector
@@ -77,13 +86,24 @@ connectors:
 #    name: SNMP Connector
 #    type: snmp
 #    configuration: snmp.json
+#
 #  -
 #    name: FTP Connector
 #    type: ftp
 #    configuration: ftp.json
+#
+#
+# ========= Customization ==========
+#
 #
 #  -
 #    name: Custom Serial Connector
 #    type: serial
 #    configuration: custom_serial.json
 #    class: CustomSerialConnector
+#
+#  -
+#    name: GRPC Connector 1
+#    key: auto
+#    type: grpc
+#    configuration: grpc_connector_1.json

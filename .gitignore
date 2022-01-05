@@ -26,3 +26,9 @@ __pycache__
 Pipfile
 
 Pipfile.lock
+
+thingsboard_gateway/extensions/parking/test_bluepy.py
+
+thingsboard_gateway/extensions/parking/test_bleak.py
+
+thingsboard_gateway/debug_tool/
